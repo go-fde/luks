@@ -11,9 +11,18 @@ permissions:
   contents: read
 
 jobs:
-  ci:
-    name: lint + build + test
-    runs-on: ubuntu-latest
+  # Native runners: full build + race + coverage on amd64 and arm64.
+  native:
+    name: native (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,23 +30,118 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: stable
           check-latest: true
           cache: true
 
-      - name: Install Task
-        uses: arduino/setup-task@v2
-        with:
-          version: 3.x
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Vet
+        run: go vet ./...
 
-      - name: Run Taskfile ci
-        run: task ci
+      - name: Build
+        run: go build ./...
+
+      - name: Test (race + coverage)
+        run: |
+          go test -race -coverprofile=cover.out ./...
+          go tool cover -func=cover.out | tail -1
 
       - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: coverage
+          name: coverage-${{ matrix.arch }}
+          path: cover.out
+          if-no-files-found: ignore
+
+  # Emulated runners: cross-compile per-package test binaries (CGO=0) and
+  # run them under QEMU via docker for the four remaining 64-bit arches.
+  # The LUKS on-disk header is big-endian; s390x (big-endian hardware)
+  # exercises that path for real.
+  emulated:
+    name: emulated (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: riscv64
+            image: debian:trixie
+            qemu_cpu: rv64,v=true,vlen=128
+          - arch: loong64
+            image: ghcr.io/loong64/debian:trixie
+            qemu_cpu: la464
+          - arch: ppc64le
+            image: debian:trixie
+            qemu_cpu: power9
+          - arch: s390x
+            image: debian:trixie
+            qemu_cpu: qemu
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          check-latest: true
+          cache: true
+
+      - name: Register binfmt handlers
+        run: docker run --privileged --rm tonistiigi/binfmt --install all
+
+      - name: Cross-compile test binaries
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: 0
+        run: |
+          mkdir -p testbins
+          for pkg in $(go list ./...); do
+            name=$(echo "$pkg" | tr '/' '_')
+            # Skip packages without test files.
+            if go test -c -cover -o "testbins/${name}.test" "$pkg" 2>/dev/null; then
+              echo "built ${name}.test for $pkg"
+            else
+              echo "no tests for $pkg (skipped)"
+            fi
+          done
+
+      - name: Run test binaries under QEMU
+        run: |
+          set -e
+          shopt -s nullglob
+          for bin in testbins/*.test; do
+            echo "::group::run $(basename "$bin") (${{ matrix.arch }})"
+            # Run as the host (non-root) user: some tests rely on file
+            # permission bits (chmod 0o400) to force write failures, which
+            # root would bypass.
+            docker run --rm \
+              --platform linux/${{ matrix.arch }} \
+              -e QEMU_CPU='${{ matrix.qemu_cpu }}' \
+              --user "$(id -u):$(id -g)" \
+              -v "$PWD:/work" -w /work \
+              ${{ matrix.image }} \
+              "/work/$bin" -test.v -test.coverprofile="/work/${bin}.cover"
+            echo "::endgroup::"
+          done
+
+      - name: Coverage summary
+        if: always()
+        run: |
+          shopt -s nullglob
+          covers=(testbins/*.cover)
+          if [ ${#covers[@]} -gt 0 ]; then
+            { echo "mode: set"; for f in "${covers[@]}"; do tail -n +2 "$f"; done; } > cover.out
+            go tool cover -func=cover.out | tail -1
+          else
+            echo "no coverage produced"
+          fi
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.arch }}
           path: cover.out
           if-no-files-found: ignore
