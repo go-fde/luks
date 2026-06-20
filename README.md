@@ -1,3 +1,5 @@
+<p align="center"><img src="https://raw.githubusercontent.com/go-fde/brand/main/social/go-fde-luks.png" alt="go-fde/luks" width="720"></p>
+
 # luks
 
 Pure-Go read/write support for LUKS1 and LUKS2 full-disk encryption containers.
