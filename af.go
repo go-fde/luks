@@ -1,7 +1,6 @@
 package luks
 
 import (
-	"crypto/hmac"
 	"fmt"
 )
 
@@ -37,12 +36,17 @@ func afMerge(afData []byte, keyBytes, stripes int, hashName string) ([]byte, err
 	return d, nil
 }
 
-// hashDiffuse applies the LUKS diffusion function to d in-place.
+// hashDiffuse applies the LUKS anti-forensic diffusion function to d in-place.
 //
-// The block d is divided into (blockLen / digestLen) sub-blocks. Each
-// sub-block is replaced by HMAC-hash(counter || sub-block) where counter
-// is a 4-byte big-endian integer. A partial sub-block at the end is handled
-// by taking only the required bytes from the HMAC output.
+// This matches cryptsetup's diffuse() in lib/luks1/af.c. The block d is divided
+// into ceil(blockLen / digestLen) sub-blocks of digestLen bytes (the last one
+// may be partial). Each sub-block i is replaced by:
+//
+//	HASH( BE32(i) || sub-block_i )
+//
+// where BE32(i) is the 4-byte big-endian sub-block index prepended to the
+// hash input. Note this is a plain (keyless) hash, NOT HMAC. For a partial
+// trailing sub-block only the required leading bytes of the digest are used.
 func hashDiffuse(d []byte, hashName string) error {
 	hf, err := hashFactory(hashName)
 	if err != nil {
@@ -56,7 +60,8 @@ func hashDiffuse(d []byte, hashName string) error {
 		counter[1] = byte(i >> 16)
 		counter[2] = byte(i >> 8)
 		counter[3] = byte(i)
-		h := hmac.New(hf, counter)
+		h := hf()
+		_, _ = h.Write(counter)
 		remaining := len(d) - pos
 		chunk := remaining
 		if chunk > digestLen {
