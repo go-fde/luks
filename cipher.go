@@ -10,7 +10,7 @@ import (
 	"io"
 	"strings"
 
-	"golang.org/x/crypto/xts"
+	"github.com/go-fde/luks/internal/xts"
 )
 
 // sectorCipher wraps the cipher logic for a LUKS payload or key area.
