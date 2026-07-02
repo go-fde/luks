@@ -2,6 +2,10 @@
 
 # luks
 
+[![ci](https://github.com/go-fde/luks/actions/workflows/ci.yml/badge.svg)](https://github.com/go-fde/luks/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/go-fde/luks.svg)](https://pkg.go.dev/github.com/go-fde/luks)
+[![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)
+
 Pure-Go read/write support for LUKS1 and LUKS2 full-disk encryption containers.
 
 ## Features
