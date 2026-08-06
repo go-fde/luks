@@ -8,7 +8,8 @@ encryption: **bulk AES-XTS sector crypto** and the **unlock KDF**
 
 The AES-XTS gap is **closed**. `go-fde/luks` no longer drives
 `golang.org/x/crypto/xts`; the `sectorCipher` now uses a **fused
-hardware-accelerated AES-XTS kernel** (`internal/xts`) that pipelines four AES
+hardware-accelerated AES-XTS kernel** (the shared `github.com/go-encryptions/xts`
+package) that pipelines four AES
 blocks at a time and folds the tweak XOR into the round pipeline — ARMv8
 `AESE`/`AESMC` on arm64, AES-NI on amd64, and a portable fallback (byte-identical
 to `x/crypto/xts`) on riscv64/loong64/ppc64le/s390x. Ciphertext stays
@@ -19,7 +20,7 @@ and the LUKS2 interop (opening stock cryptsetup containers) is preserved.
 
 - **Ours (host):** Apple M4 Max, macOS 26.5, Go 1.26.4 `darwin/arm64`.
   ARMv8 AES instructions present (`hw.optional.arm.FEAT_AES = 1`). The bulk
-  cipher is the fused `internal/xts` kernel over `crypto/aes`; KDFs are
+  cipher is the fused `github.com/go-encryptions/xts` kernel over `crypto/aes`; KDFs are
   `golang.org/x/crypto/{pbkdf2,argon2}` — the exact code `go-fde/luks` ships.
   Single core. Metric: MB/s over a 1 MiB buffer in 512-byte sectors
   (`b.SetBytes`), best of `-count=2 -benchtime=3s`. KDF metric: ms/derivation.
