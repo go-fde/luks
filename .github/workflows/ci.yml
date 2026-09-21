@@ -34,6 +34,17 @@ jobs:
           check-latest: true
           cache: true
 
+      # ⛔ The judge for LUKS1. Until this lane installed it, LUKS1 had no
+      # third-party witness at all: both committed fixtures are LUKS2, and
+      # the live test formats --type luks2. That is how an AF-diffusion
+      # defect survived for months -- our writer and our reader agreed with
+      # each other, and nothing else was ever asked.
+      #
+      # Formatting a file needs no root, so this runs as the ordinary runner
+      # user; only writing through a dm-crypt mapping would not.
+      - name: cryptsetup, as a foreign reader of the format
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq cryptsetup-bin
+
       - name: Vet
         run: go vet ./...
 
@@ -41,6 +52,9 @@ jobs:
         run: go build ./...
 
       - name: Test (race + coverage)
+        env:
+          # A skip here would look exactly like a pass.
+          LUKS_REQUIRE_CRYPTSETUP: "1"
         run: |
           go test -race -coverprofile=cover.out ./...
           go tool cover -func=cover.out | tail -1

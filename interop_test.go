@@ -161,3 +161,89 @@ func TestInterop_LiveCryptsetup(t *testing.T) {
 		})
 	}
 }
+
+// TestInterop_CryptsetupLUKS1 opens a LUKS1 container that the real cryptsetup
+// wrote.
+//
+// ⛔ Until this existed, LUKS1 had NO third-party witness at all: the two
+// committed fixtures are LUKS2, and TestInterop_LiveCryptsetup formats
+// --type luks2 in both of its cases. The AF-diffusion defect this package
+// carried for months -- HMAC where cryptsetup uses a plain keyless hash -- was
+// invisible precisely because our writer and our reader agreed with each
+// other. A round trip between two halves that share a misreading proves
+// nothing about either.
+//
+// It needs no root, and that is the point: FORMATTING a file touches no
+// device-mapper, so this runs as an ordinary user wherever cryptsetup is
+// installed. Only writing a marker through the mapping needs root, which is
+// why TestInterop_LiveCryptsetup skips almost everywhere while this does not.
+//
+// What it pins is exactly the path that broke: the LUKS1 header parse, the
+// keyslot PBKDF2, the AF merge over 4000 stripes, and the master-key digest
+// check. If the diffusion is wrong by one byte, Open returns "no key slot
+// matches passphrase" -- the error that took three months and somebody else's
+// red dependency PR to surface.
+//
+// LUKS_REQUIRE_CRYPTSETUP=1 turns "cryptsetup is not installed" from a skip
+// into a failure. The lanes that install it set it, because a judge that can
+// quietly not run is not a control.
+func TestInterop_CryptsetupLUKS1(t *testing.T) {
+	cs, err := exec.LookPath("cryptsetup")
+	if err != nil {
+		if os.Getenv("LUKS_REQUIRE_CRYPTSETUP") != "" {
+			t.Fatalf("LUKS_REQUIRE_CRYPTSETUP is set but cryptsetup is not installed: %v", err)
+		}
+		t.Skip("cryptsetup not installed; skipping LUKS1 interop")
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		// The stock default, whatever this cryptsetup's is.
+		{"default", nil},
+		// sha512 exercises a digest whose size is not the 32 bytes the AF
+		// sub-block loop is most likely to have been written around.
+		{"sha512", []string{"--hash", "sha512"}},
+		// A key size that is not the default makes the AF stripe width differ
+		// from the digest width, which is where an off-by-one in the partial
+		// trailing sub-block would show.
+		{"aes-xts-plain64-512", []string{"--cipher", "aes-xts-plain64", "--key-size", "512"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			img := filepath.Join(t.TempDir(), "luks1.img")
+			if err := os.WriteFile(img, make([]byte, 16<<20), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			args := append([]string{
+				"luksFormat", "--type", "luks1", "--batch-mode",
+				// Keep the keyslot cheap: this tests the FORMAT, not the cost
+				// parameter, and a default iteration count makes the lane slow
+				// for nothing. --iter-time is used rather than
+				// --pbkdf-force-iterations because it has existed for as long as
+				// LUKS1 has, and this cannot be tried on the machine it is
+				// written on: cryptsetup is Linux-only.
+				"--iter-time", "1",
+			}, tc.args...)
+			args = append(args, img)
+
+			cmd := exec.Command(cs, args...)
+			cmd.Stdin = bytes.NewReader([]byte(interopPassphrase))
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("cryptsetup %v: %v\n%s", args, err, out)
+			}
+
+			dev, err := Open(img, []byte(interopPassphrase))
+			if err != nil {
+				t.Fatalf("go-fde/luks could not open a cryptsetup LUKS1 container: %v", err)
+			}
+			defer dev.Close()
+
+			// And the wrong passphrase must still be wrong: a unlock that
+			// accepts everything would pass the check above too.
+			if _, err := Open(img, []byte(interopPassphrase+"x")); err == nil {
+				t.Error("a wrong passphrase unlocked the container")
+			}
+		})
+	}
+}
