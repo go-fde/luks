@@ -73,7 +73,7 @@ func parseLUKS1Phdr(f io.ReaderAt) (*luks1Phdr, error) {
 
 // unlockLUKS1 tries each active key slot with passphrase and returns the
 // container description if a slot matches.
-func unlockLUKS1(f io.ReaderAt, passphrase []byte) (*luksHeader, error) {
+func unlockLUKS1(f io.ReaderAt, passphrase []byte, lim Limits) (*luksHeader, error) {
 	h, err := parseLUKS1Phdr(f)
 	if err != nil {
 		return nil, err
@@ -82,9 +82,19 @@ func unlockLUKS1(f io.ReaderAt, passphrase []byte) (*luksHeader, error) {
 	if err != nil {
 		return nil, fmt.Errorf("luks1: %w", err)
 	}
+	if err := lim.pbkdf2("master-key digest", int64(h.mkDigestIterations)); err != nil {
+		return nil, fmt.Errorf("luks1: %w", err)
+	}
+	var refused error // the first slot the limits refused, said if none opens
 	for i := range h.keySlots {
 		slot := &h.keySlots[i]
 		if slot.active != luks1KeySlotActive {
+			continue
+		}
+		if err := checkLUKS1Slot(h, slot, lim); err != nil {
+			if refused == nil {
+				refused = fmt.Errorf("luks1: key slot %d: %w", i, err)
+			}
 			continue
 		}
 		mk, err := tryLUKS1Slot(f, h, slot, passphrase, hashFn)
@@ -99,7 +109,19 @@ func unlockLUKS1(f io.ReaderAt, passphrase []byte) (*luksHeader, error) {
 			sectorSize: luks1SectorSize,
 		}, nil
 	}
+	if refused != nil {
+		return nil, refused
+	}
 	return nil, fmt.Errorf("luks1: no key slot matches passphrase")
+}
+
+// checkLUKS1Slot refuses a slot whose parameters exceed lim, before any
+// work is done for it.
+func checkLUKS1Slot(h *luks1Phdr, slot *luks1KeySlot, lim Limits) error {
+	if err := lim.pbkdf2("key slot", int64(slot.iterations)); err != nil {
+		return err
+	}
+	return split(int64(h.keyBytes), int64(slot.stripes))
 }
 
 // tryLUKS1Slot derives the slot key, decrypts the AF material, and verifies

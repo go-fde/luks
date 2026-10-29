@@ -94,6 +94,34 @@ dev.WriteAt(myData, 0)
 `FormatOn` accepts the same `blockRW` interface as `OpenFrom`, allowing LUKS to
 be initialised directly inside a QCOW2 virtual disk or any other RW backend.
 
+## Opening an untrusted image: limits
+
+A LUKS header is read from the image, so it says how much work unlocking
+costs. Without bounds, a crafted header could ask for 2³² PBKDF2 iterations
+(hours of CPU) or 4 TiB of Argon2 memory, or it could crash the program:
+zero Argon2 passes or threads make `golang.org/x/crypto/argon2` panic. Every
+key slot and digest is therefore checked **before** any work is done for it.
+
+- **Always**: Argon2 1 to 4 threads, at most 4 GiB, and at least 8 KiB per
+  thread (cryptsetup's `crypt_pbkdf_get_limits` and RFC 9106 §3.1). At
+  least one iteration. An anti-forensic split of at most 4000 stripes of a
+  key of at most 128 bytes.
+- **The caller's** `Limits`: PBKDF2 iterations, Argon2 passes and memory.
+  `Open` and `OpenFrom` use `DefaultLimits`: 2²⁶ iterations, 1000 passes,
+  4 GiB. A program opening images from elsewhere (an upload, a browser) can
+  tighten them with `OpenLimited` / `OpenFromLimited`.
+
+A refused slot gives an error that wraps `ErrLimit` and names the slot.
+A wrong passphrase gives a different error.
+
+```go
+dev, err := luks.OpenFromLimited(rw, passphrase, luks.Limits{
+	MaxPBKDF2Iterations: 1 << 22,
+	MaxArgon2Time:       16,
+	MaxArgon2MemoryKiB:  1 << 20, // 1 GiB
+})
+```
+
 ## IV sector number semantics
 
 Sector numbers used for IV computation start at `0` (or the LUKS2 `iv_tweak`

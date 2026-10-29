@@ -50,11 +50,15 @@ type Device struct {
 // Open opens the LUKS1 or LUKS2 container at path and unlocks it using
 // passphrase. Returns a Device that exposes the plaintext payload.
 func Open(path string, passphrase []byte) (*Device, error) {
+	return open(path, passphrase, DefaultLimits)
+}
+
+func open(path string, passphrase []byte, lim Limits) (*Device, error) {
 	f, err := os.OpenFile(path, os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("luks: open %s: %w", path, err)
 	}
-	dev, err := openDevice(f, passphrase)
+	dev, err := openDevice(f, passphrase, lim)
 	if err != nil {
 		f.Close()
 		return nil, err
@@ -67,12 +71,12 @@ func Open(path string, passphrase []byte) (*Device, error) {
 // The caller is responsible for ensuring that rw remains valid for the
 // lifetime of the returned Device; Close on the Device also closes rw.
 func OpenFrom(rw blockRW, passphrase []byte) (*Device, error) {
-	return openDevice(rw, passphrase)
+	return openDevice(rw, passphrase, DefaultLimits)
 }
 
 // openDevice is the shared implementation for Open and OpenFrom.
-func openDevice(rw blockRW, passphrase []byte) (*Device, error) {
-	h, err := unlock(rw, passphrase)
+func openDevice(rw blockRW, passphrase []byte, lim Limits) (*Device, error) {
+	h, err := unlock(rw, passphrase, lim)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +125,7 @@ func (d *Device) Size() int64 { return d.h.payloadLen }
 func (d *Device) Close() error { return d.f.Close() }
 
 // unlock detects the LUKS version and dispatches to the appropriate parser.
-func unlock(f blockRW, passphrase []byte) (*luksHeader, error) {
+func unlock(f blockRW, passphrase []byte, lim Limits) (*luksHeader, error) {
 	magic := make([]byte, 8)
 	if _, err := f.ReadAt(magic, 0); err != nil {
 		return nil, fmt.Errorf("luks: read header: %w", err)
@@ -132,9 +136,9 @@ func unlock(f blockRW, passphrase []byte) (*luksHeader, error) {
 	version := int(magic[6])<<8 | int(magic[7])
 	switch version {
 	case 1:
-		return unlockLUKS1(f, passphrase)
+		return unlockLUKS1(f, passphrase, lim)
 	case 2:
-		return unlockLUKS2(f, passphrase)
+		return unlockLUKS2(f, passphrase, lim)
 	default:
 		return nil, fmt.Errorf("luks: unsupported version %d", version)
 	}
