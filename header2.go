@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/pbkdf2"
@@ -139,6 +140,10 @@ func unlockLUKS2(f io.ReaderAt, passphrase []byte, lim Limits) (*luksHeader, err
 	if err != nil {
 		return nil, fmt.Errorf("luks2: iv_tweak: %w", err)
 	}
+	payloadLen, err := parseSegmentSize(seg.Size)
+	if err != nil {
+		return nil, fmt.Errorf("luks2: segment size: %w", err)
+	}
 	if err := checkLUKS2Digests(cfg, lim); err != nil {
 		return nil, fmt.Errorf("luks2: %w", err)
 	}
@@ -161,6 +166,7 @@ func unlockLUKS2(f io.ReaderAt, passphrase []byte, lim Limits) (*luksHeader, err
 			version:    2,
 			volumeKey:  mk,
 			payloadOff: payloadOff,
+			payloadLen: payloadLen,
 			cipher:     cipher,
 			sectorSize: sectorSize,
 			ivTweak:    ivTweak,
@@ -215,6 +221,9 @@ func parseMainSegment(cfg *luks2JSON) (luks2Segment, int64, int, string, error) 
 			continue
 		}
 		off, err := parseOffset(seg.Offset)
+		if err == nil && off < 0 {
+			err = fmt.Errorf("negative offset %d", off)
+		}
 		if err != nil {
 			return seg, 0, 0, "", fmt.Errorf("luks2: parse segment offset: %w", err)
 		}
@@ -314,6 +323,20 @@ func parseOffset(s string) (int64, error) {
 	var v int64
 	if _, err := fmt.Sscanf(s, "%d", &v); err != nil {
 		return 0, fmt.Errorf("invalid offset %q: %w", s, err)
+	}
+	return v, nil
+}
+
+// parseSegmentSize parses a LUKS2 segment size: a decimal byte count, or
+// "dynamic" for a segment that runs to the end of the device, which is 0
+// here as in cryptsetup's json_segment_get_size (lib/luks2/luks2_segment.c).
+func parseSegmentSize(s string) (int64, error) {
+	if s == "" || s == "dynamic" {
+		return 0, nil
+	}
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || v < 0 {
+		return 0, fmt.Errorf("invalid size %q", s)
 	}
 	return v, nil
 }

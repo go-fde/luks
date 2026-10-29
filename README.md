@@ -62,6 +62,11 @@ _, err = dev.WriteAt([]byte("hello"), 0)
 ok, err := luks.Detect("/path/to/disk.img")
 ```
 
+`dev.Size()` is the payload size the header states. It is 0 when the payload
+runs to the end of the device, which is the case for every LUKS1 header and
+for a LUKS2 segment of size `"dynamic"`, what cryptsetup writes. The payload
+is then `deviceSize - dev.PayloadOffset()` bytes.
+
 ### Create a new LUKS1 container
 
 `Format` and `FormatOn` initialise a fresh LUKS1 header on an existing file or

@@ -117,9 +117,16 @@ func (d *Device) WriteAt(p []byte, off int64) (int, error) {
 	return d.enc.writeAt(d.f, p, d.h.payloadOff+off)
 }
 
-// Size returns the size of the plaintext payload in bytes.
-// Returns 0 if the size was not determined from the header (dynamic).
+// Size returns the size of the plaintext payload in bytes, as the header
+// states it. It is 0 when the payload runs to the end of the device -- every
+// LUKS1 header, and a LUKS2 segment of size "dynamic", which is what
+// cryptsetup writes -- and the payload is then the device's size minus
+// PayloadOffset.
 func (d *Device) Size() int64 { return d.h.payloadLen }
+
+// PayloadOffset returns the byte offset of the payload in the device: the
+// payload's offset 0 is the device's PayloadOffset.
+func (d *Device) PayloadOffset() int64 { return d.h.payloadOff }
 
 // Close releases the underlying file descriptor.
 func (d *Device) Close() error { return d.f.Close() }
