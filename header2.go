@@ -122,7 +122,7 @@ func parseLUKS2JSON(f io.ReaderAt, binHdr *luks2BinHdr) (*luks2JSON, error) {
 }
 
 // unlockLUKS2 tries each key slot with passphrase and returns a luksHeader.
-func unlockLUKS2(f io.ReaderAt, passphrase []byte) (*luksHeader, error) {
+func unlockLUKS2(f io.ReaderAt, passphrase []byte, lim Limits) (*luksHeader, error) {
 	binHdr, err := parseLUKS2BinHdr(f)
 	if err != nil {
 		return nil, err
@@ -139,7 +139,17 @@ func unlockLUKS2(f io.ReaderAt, passphrase []byte) (*luksHeader, error) {
 	if err != nil {
 		return nil, fmt.Errorf("luks2: iv_tweak: %w", err)
 	}
-	for _, slot := range cfg.Keyslots {
+	if err := checkLUKS2Digests(cfg, lim); err != nil {
+		return nil, fmt.Errorf("luks2: %w", err)
+	}
+	var refused error // the first slot the limits refused, said if none opens
+	for name, slot := range cfg.Keyslots {
+		if err := checkLUKS2Slot(&slot, lim); err != nil {
+			if refused == nil {
+				refused = fmt.Errorf("luks2: key slot %v: %w", name, err)
+			}
+			continue
+		}
 		mk, err := tryLUKS2Slot(f, &slot, passphrase)
 		if err != nil {
 			continue
@@ -156,7 +166,45 @@ func unlockLUKS2(f io.ReaderAt, passphrase []byte) (*luksHeader, error) {
 			ivTweak:    ivTweak,
 		}, nil
 	}
+	if refused != nil {
+		return nil, refused
+	}
 	return nil, fmt.Errorf("luks2: no key slot matches passphrase")
+}
+
+// checkLUKS2Slot refuses a key slot whose parameters exceed lim, before any
+// work is done for it.
+func checkLUKS2Slot(slot *luks2Keyslot, lim Limits) error {
+	if slot.Area.KeySize < 0 || slot.Area.KeySize > maxKeyBytes {
+		return fmt.Errorf("%w: a key area key of %d bytes", ErrLimit, slot.Area.KeySize)
+	}
+	if err := split(int64(slot.KeySize), int64(slot.AF.Stripes)); err != nil {
+		return err
+	}
+	switch slot.KDF.Type {
+	case "pbkdf2":
+		return lim.pbkdf2("key slot", int64(slot.KDF.Iterations))
+	case "argon2i", "argon2id":
+		return lim.argon2(int64(slot.KDF.Time), int64(slot.KDF.Memory), int64(slot.KDF.CPUs))
+	}
+	return nil // an unknown KDF is refused by deriveKeyLUKS2
+}
+
+// checkLUKS2Digests bounds every master-key digest: each candidate key is
+// checked against all of them.
+func checkLUKS2Digests(cfg *luks2JSON, lim Limits) error {
+	for _, d := range cfg.Digests {
+		if d.Type != "pbkdf2" {
+			continue
+		}
+		if len(d.Digest) == 0 || len(d.Digest) > maxDigestBytes {
+			return fmt.Errorf("%w: a digest of %d bytes", ErrLimit, len(d.Digest))
+		}
+		if err := lim.pbkdf2("master-key digest", int64(d.Iterations)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // parseMainSegment extracts the payload offset, sector size and cipher from
