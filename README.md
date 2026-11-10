@@ -145,6 +145,24 @@ covers the vast majority of LUKS containers found in practice:
 - LUKS1 with `aes-cbc-essiv:sha256` and `sha1`/`ripemd160` (legacy containers)
 - LUKS2 with PBKDF2 or Argon2id (the `cryptsetup` LUKS2 default)
 
+CI checks this against `cryptsetup` itself. It formats LUKS1 files with
+`cryptsetup luksFormat --type luks1` and opens them with this package, and
+it reads committed LUKS2 images that cryptsetup wrote.
+
+**Containers written before 2026-06-22 are not compatible.** Builds before
+commit `c7f272e` (pseudo-versions older than `v0.0.0-20260622…`) used an
+HMAC in the anti-forensic split's diffusion step, where cryptsetup uses a
+plain hash. As a result:
+
+- `cryptsetup` cannot open key slots those builds wrote;
+- later versions of this package cannot open them either;
+- the error is the same `no key slot matches passphrase` as a wrong
+  passphrase.
+
+To recover such a container, open it with a pre-`c7f272e` build and copy
+its data into a container formatted by a current version. go-fde/luks#14
+records how the difference was found.
+
 ## Layering on top of other block devices (raw, QCOW2, …)
 
 `OpenFrom` allows layering LUKS on top of any read-write-closable block device
