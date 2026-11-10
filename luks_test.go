@@ -961,30 +961,13 @@ func (w *errWriterAt) WriteAt(_ []byte, _ int64) (int, error) {
 	return 0, fmt.Errorf("write error")
 }
 
-// TestCBC_DecryptBadKey exercises cbcDecryptSector with an invalid key size.
-func TestCBC_DecryptBadKey(t *testing.T) {
-	sc := &sectorCipher{mode: "cbc-essiv:sha256", sectorSize: 512, cbcKey: []byte{1}}
-	sc.ivKey, _ = aes.NewCipher(make([]byte, 16))
-	if err := sc.cbcDecryptSector(make([]byte, 512), 0); err == nil {
-		t.Fatal("expected error for bad cbcKey in decryptSector")
-	}
-}
-
-// TestCBC_EncryptBadKey exercises cbcEncryptSector with an invalid key size.
-func TestCBC_EncryptBadKey(t *testing.T) {
-	sc := &sectorCipher{mode: "cbc-essiv:sha256", sectorSize: 512, cbcKey: []byte{1}}
-	sc.ivKey, _ = aes.NewCipher(make([]byte, 16))
-	if err := sc.cbcEncryptSector(make([]byte, 512), 0); err == nil {
-		t.Fatal("expected error for bad cbcKey in encryptSector")
-	}
-}
-
-// TestDecryptRaw_PartialSectorCBCError exercises the error in decryptRaw's partial-sector path.
-func TestDecryptRaw_PartialSectorCBCError(t *testing.T) {
-	sc := &sectorCipher{mode: "cbc-essiv:sha256", sectorSize: 512, cbcKey: []byte{1}}
-	sc.ivKey, _ = aes.NewCipher(make([]byte, 16))
-	if _, err := sc.decryptRaw(make([]byte, 600)); err == nil {
-		t.Fatal("expected error for bad cbcKey in decryptRaw partial sector")
+// TestCBC_BadKeyRefusedAtConstruction: a CBC key AES cannot use is refused
+// when the sector cipher is built. It used to be accepted there and to fail
+// on every sector, which five tests exercised by building that state by
+// hand; the state no longer exists.
+func TestCBC_BadKeyRefusedAtConstruction(t *testing.T) {
+	if _, err := newSectorCipher("aes-cbc-essiv:sha256", []byte{1}, 512); err == nil {
+		t.Fatal("a 1-byte CBC key was accepted")
 	}
 }
 
@@ -1372,27 +1355,6 @@ func TestLUKS2_SlotReadFail(t *testing.T) {
 	}
 }
 
-// TestReadAt_DecryptError exercises the decryptSector error path inside readAt.
-func TestReadAt_DecryptError(t *testing.T) {
-	// Bad cbcKey (1 byte) → cbcDecryptSector fails after a successful ReadAt.
-	sc := &sectorCipher{mode: "cbc-essiv:sha256", sectorSize: 512, cbcKey: []byte{1}}
-	sc.ivKey, _ = aes.NewCipher(make([]byte, 16))
-	ro := &readOnlyAt{data: make([]byte, 512)}
-	if _, err := sc.readAt(ro, make([]byte, 512), 0); err == nil {
-		t.Fatal("expected error when decryptSector fails inside readAt")
-	}
-}
-
-// TestWriteAt_DecryptError exercises the decryptSector error path inside writeAt.
-func TestWriteAt_DecryptError(t *testing.T) {
-	sc := &sectorCipher{mode: "cbc-essiv:sha256", sectorSize: 512, cbcKey: []byte{1}}
-	sc.ivKey, _ = aes.NewCipher(make([]byte, 16))
-	w := &errWriterAt{data: make([]byte, 512)}
-	if _, err := sc.writeAt(w, []byte("hello"), 0); err == nil {
-		t.Fatal("expected error when decryptSector fails inside writeAt")
-	}
-}
-
 // TestLUKS2_EmptyAFHash exercises the default AF hash path in tryLUKS2Slot.
 func TestLUKS2_EmptyAFHash(t *testing.T) {
 	// AF.Hash="" causes the hashName default to "sha256" branch to execute.
@@ -1507,22 +1469,9 @@ func TestLUKS2_SlotBadAreaCipherViaOpen(t *testing.T) {
 	}
 }
 
-// TestDecryptRaw_TinyPartialSectorError covers the error path in decryptRaw
-// when the first (and only, sub-sector) block fails to decrypt.
-func TestDecryptRaw_TinyPartialSectorError(t *testing.T) {
-	// 1-byte cbcKey is invalid for AES; with < 512 bytes data the partial-sector
-	// path is triggered immediately on sector 0.
-	sc := &sectorCipher{mode: "cbc-essiv:sha256", sectorSize: 512, cbcKey: []byte{1}}
-	sc.ivKey, _ = aes.NewCipher(make([]byte, 16))
-	if _, err := sc.decryptRaw(make([]byte, 100)); err == nil {
-		t.Fatal("expected error for bad cbcKey in decryptRaw tiny partial sector")
-	}
-}
-
-// TestLUKS2_SlotDecryptRawFail covers the decryptRaw error path in tryLUKS2Slot.
-// We use aes-cbc-essiv:sha256 area encryption with Area.KeySize=1 so that
-// initCBCESSIV accepts the key (uses sha256 for ESSIV IV, no key validation)
-// but the actual CBC decryption fails with the 1-byte cbcKey.
+// TestLUKS2_SlotDecryptRawFail: a keyslot whose area key AES cannot use
+// (Area.KeySize=1, aes-cbc-essiv:sha256) fails in tryLUKS2Slot. The refusal
+// now comes from building the area cipher, before any sector is touched.
 func TestLUKS2_SlotDecryptRawFail(t *testing.T) {
 	slot := &luks2Keyslot{
 		Type: "luks2", KeySize: 1,

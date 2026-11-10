@@ -11,9 +11,10 @@ import (
 // Benchmarks for the hot crypto paths of the LUKS backend.
 //
 // These exercise the exact code that go-fde/luks uses in production:
-//   - sectorCipher (AES-XTS / AES-CBC-ESSIV over golang.org/x/crypto/xts +
-//     crypto/aes, which uses the ARMv8 AES instructions on arm64 and AES-NI
-//     on amd64),
+//   - Device reads and writes through sectorCipher.readAt / writeAt
+//     (BenchmarkReadAt, BenchmarkWriteAt in readat_bench_test.go), and the
+//     single-sector API below (AES-XTS over go-encryptions/xts, AES-CBC-ESSIV
+//     over go-encryptions/cbc),
 //   - the PBKDF2 and Argon2 KDFs used to unlock LUKS1/LUKS2 key slots.
 //
 // They are excluded from the coverage gate: `go test` without -bench skips

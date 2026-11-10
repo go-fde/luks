@@ -1,4 +1,52 @@
-# Performance parity — go-fde/luks vs cryptsetup / OpenSSL  (2026-06-22)
+# Performance — go-fde/luks vs cryptsetup / OpenSSL
+
+## 2026-11-10: whole-span I/O, batched sector ciphers
+
+`Device.ReadAt` and `WriteAt` used to work one sector at a time. Each
+sector cost one `ReadAt` on the underlying device, one 512-byte buffer,
+and, for CBC, a new `aes.NewCipher`. Now:
+
+- **I/O:** the whole sector span is read with one `ReadAt` and written with
+  one `WriteAt`. Only a partial first or last sector is read back for
+  read-modify-write.
+- **XTS:** goes through go-encryptions/xts v0.2.0 `DecryptSectors` /
+  `EncryptSectors`, which encrypt the tweaks of 8 sectors at a time.
+- **CBC-ESSIV decryption:** go-encryptions/cbc v0.1.0 computes the ESSIV
+  IVs 8 at a time (`EncryptECB`) and decrypts 8 blocks at a time
+  (`DecryptSectors`).
+- **CBC encryption** is serial within a sector and still goes through
+  `crypto/cipher`.
+- **Aligned reads** decrypt in the caller's buffer.
+
+Measured on one Apple M4 Max core: 1 MiB per call, 512-byte sectors.
+`abbench --max-load 8` ran 6 rounds interleaved with a clean clone of
+v0.2.0 (`BenchmarkReadAt`, `BenchmarkWriteAt`); every row is p=0.002.
+
+| | v0.2.0 | 2026-11-10 | allocations per call |
+|---|---|---|---|
+| ReadAt AES-128-XTS | 2.21 GB/s | **8.17 GB/s** | 4 096 → 1 (then 0, see below) |
+| ReadAt AES-256-XTS | 2.18 GB/s | **7.12 GB/s** | 4 096 → 1 |
+| ReadAt AES-128-CBC-ESSIV | 1.21 GB/s | **8.64 GB/s** | 8 192 → 2 |
+| ReadAt AES-256-CBC-ESSIV | 1.16 GB/s | **7.82 GB/s** | 8 192 → 2 |
+| WriteAt AES-128-XTS | 1.21 GB/s | **8.05 GB/s** | 6 144 → 1 |
+| WriteAt AES-256-XTS | 1.19 GB/s | **7.15 GB/s** | 6 144 → 1 |
+| WriteAt AES-128-CBC-ESSIV | 0.55 GB/s | **1.24 GB/s** | 14 336 → 2 050 |
+| WriteAt AES-256-CBC-ESSIV | 0.49 GB/s | **1.01 GB/s** | 14 336 → 2 050 |
+
+After the A/B run, sector-aligned reads were changed to decrypt in the
+caller's buffer, which removes the 1 MiB buffer allocation.
+
+The figures include copying the megabyte out of the in-memory test
+device. For reference, `openssl speed -bytes 512` on the same core gives
+12.8 GB/s for AES-128-XTS encryption and 17.6 GB/s for AES-128-CBC
+decryption, with no device copy. The xts and cbc kernels alone are ahead
+of OpenSSL (go-encryptions/xts v0.2.0, go-encryptions/cbc v0.1.0).
+
+CBC writes remain the slow path, for two reasons. Each sector's chain is
+serial, and `crypto/cipher` allocates one encrypter per sector. Encrypting
+8 sectors' chains interleaved is filed on go-encryptions/cbc.
+
+## 2026-06-22: the fused XTS kernel
 
 Rigorous parity benchmark of the two hot crypto paths that dominate full-disk
 encryption: **bulk AES-XTS sector crypto** and the **unlock KDF**
