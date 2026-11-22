@@ -1,8 +1,9 @@
 package luks
 
 import (
-	"errors"
 	"fmt"
+
+	"github.com/go-encryptions/kdfbudget"
 )
 
 // Limits bound the work a header may make Open do. A header is read from
@@ -54,8 +55,10 @@ const (
 	maxDigestBytes     = 64
 )
 
-// ErrLimit is a key slot or digest whose parameters a Limits refuses.
-var ErrLimit = errors.New("luks: the header asks for more than the limits allow")
+// ErrLimit is a key slot or digest whose parameters a Limits refuses, or a
+// header whose total key-derivation work exceeds the kdfbudget budget. It is
+// kdfbudget.ErrLimit, so errors.Is matches either.
+var ErrLimit = kdfbudget.ErrLimit
 
 func (l Limits) pbkdf2(what string, iter int64) error {
 	switch {

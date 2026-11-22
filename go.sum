@@ -2,6 +2,8 @@ github.com/go-encryptions/cbc v0.1.1 h1:lf+s862JXG6YrgPrVCZNiBby6dicHdBjMsTF/C+d
 github.com/go-encryptions/cbc v0.1.1/go.mod h1:BhSOWBJ5QXH8trCypYXvpqVYqwchKfsQol+s2ZnNZYo=
 github.com/go-encryptions/hmac v0.1.0 h1:UNlHdrnKQ83bgYK/QbAmawkaedE0fz9oVqa9spmZaRo=
 github.com/go-encryptions/hmac v0.1.0/go.mod h1:ZVYztBfG5q/Bh9ITfw+CpgXM5Zrj2SV4TelafA5KT90=
+github.com/go-encryptions/kdfbudget v0.1.0 h1:/1n/q+kjoBq3A5JCW/ORQ/nuTbFMn5H22DLgcwCM6lU=
+github.com/go-encryptions/kdfbudget v0.1.0/go.mod h1:8mdvU3fDl6oyWKcTBOSI6Ws+sxZBYOxSPc9i4bpDzS0=
 github.com/go-encryptions/xts v0.3.2 h1:0HKFiBsCaT2+4sPBZXy/oT6Wo8a96EpUEmrDzdGO8sw=
 github.com/go-encryptions/xts v0.3.2/go.mod h1:DOulimnYhyZsjPPeMPDkD/i6cUOLq7mpfvGKG+cdVKQ=
 golang.org/x/crypto v0.59.0 h1:xS2jhqYbzNrpvkWP2YTDf4TJwBy3ykR03i8vFDxEc7c=

@@ -1237,10 +1237,10 @@ func TestLUKS2_BadPBKDF2Hash(t *testing.T) {
 func TestLUKS2_NonPBKDF2Digest(t *testing.T) {
 	cfg := &luks2JSON{
 		Digests: map[string]luks2Digest{
-			"0": {Type: "argon2", Hash: "sha256"},
+			"0": {Type: "argon2", Hash: "sha256", Keyslots: []string{"0"}},
 		},
 	}
-	if err := verifyLUKS2MasterKey(mustRand(64), cfg); err == nil {
+	if err := verifyLUKS2MasterKey(mustRand(64), digestsForSlot(cfg, "0")); err == nil {
 		t.Fatal("expected error when no matching pbkdf2 digest")
 	}
 }
@@ -1249,10 +1249,10 @@ func TestLUKS2_NonPBKDF2Digest(t *testing.T) {
 func TestLUKS2_BadDigestHash(t *testing.T) {
 	cfg := &luks2JSON{
 		Digests: map[string]luks2Digest{
-			"0": {Type: "pbkdf2", Hash: "md5", Salt: mustRand(32), Iterations: 1, Digest: mustRand(16)},
+			"0": {Type: "pbkdf2", Hash: "md5", Keyslots: []string{"0"}, Salt: mustRand(32), Iterations: 1, Digest: mustRand(16)},
 		},
 	}
-	if err := verifyLUKS2MasterKey(mustRand(16), cfg); err == nil {
+	if err := verifyLUKS2MasterKey(mustRand(16), digestsForSlot(cfg, "0")); err == nil {
 		t.Fatal("expected error when digest hash is unsupported")
 	}
 }

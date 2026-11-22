@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"slices"
 	"strconv"
 
 	"github.com/go-encryptions/hmac"
+	"github.com/go-encryptions/kdfbudget"
 	"golang.org/x/crypto/argon2"
 )
 
@@ -240,9 +242,15 @@ func unlockLUKS2(f io.ReaderAt, passphrase []byte, lim Limits) (*luksHeader, err
 	if payloadLen%int64(sectorSize) != 0 {
 		return nil, fmt.Errorf("luks2: segment size %d is not a multiple of sector_size %d", payloadLen, sectorSize)
 	}
+	if err := checkLUKS2Counts(cfg); err != nil {
+		return nil, fmt.Errorf("luks2: %w", err)
+	}
 	if err := checkLUKS2Digests(cfg, lim); err != nil {
 		return nil, fmt.Errorf("luks2: %w", err)
 	}
+	// The total work of one unlock (every slot KDF and every digest check) is
+	// charged to one budget BEFORE it is spent (go-encryptions/kdfbudget).
+	budget := newKDFBudget()
 	var refused error // the first slot the limits refused, said if none opens
 	for name, slot := range cfg.Keyslots {
 		if err := checkLUKS2Slot(&slot, lim); err != nil {
@@ -251,11 +259,25 @@ func unlockLUKS2(f io.ReaderAt, passphrase []byte, lim Limits) (*luksHeader, err
 			}
 			continue
 		}
+		// A slot is checked only against the digests that list it, as
+		// cryptsetup does; a slot no digest lists cannot open anything.
+		digests := digestsForSlot(cfg, name)
+		if len(digests) == 0 {
+			continue
+		}
+		if err := chargeLUKS2Slot(budget, &slot); err != nil {
+			return nil, fmt.Errorf("luks2: key slot %v: %w", name, err)
+		}
 		mk, err := tryLUKS2Slot(f, &slot, passphrase)
 		if err != nil {
 			continue
 		}
-		if err := verifyLUKS2MasterKey(mk, cfg); err != nil {
+		for _, d := range digests {
+			if err := chargeLUKS2Digest(budget, &d); err != nil {
+				return nil, fmt.Errorf("luks2: digest for key slot %v: %w", name, err)
+			}
+		}
+		if err := verifyLUKS2MasterKey(mk, digests); err != nil {
 			continue
 		}
 		return &luksHeader{
@@ -274,6 +296,53 @@ func unlockLUKS2(f io.ReaderAt, passphrase []byte, lim Limits) (*luksHeader, err
 	return nil, fmt.Errorf("luks2: no key slot matches passphrase")
 }
 
+// newKDFBudget makes the budget of one unlock; tests replace it.
+var newKDFBudget = kdfbudget.Default
+
+// chargePBKDF2 charges one PBKDF2 run: iterations per output block, one block
+// per hash-size bytes of output.
+func chargePBKDF2(b *kdfbudget.Budget, hashName string, iters uint64, outLen int) error {
+	hf, err := hashFactory(hashName)
+	if err != nil {
+		return nil // refused where it is derived
+	}
+	cost := kdfbudget.CostSHA256
+	if hashName == "sha512" {
+		cost = kdfbudget.CostSHA512
+	}
+	size := hf().Size()
+	blocks := uint64(max(outLen, 1)+size-1) / uint64(size)
+	for range blocks {
+		if err := b.ChargePBKDF2(cost, iters); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// chargeLUKS2Slot charges the KDF of slot to b, before it is run.
+func chargeLUKS2Slot(b *kdfbudget.Budget, slot *luks2Keyslot) error {
+	keyLen := slot.Area.KeySize
+	if keyLen == 0 {
+		keyLen = slot.KeySize
+	}
+	switch slot.KDF.Type {
+	case "pbkdf2":
+		return chargePBKDF2(b, slot.KDF.Hash, uint64(max(slot.KDF.Iterations, 0)), keyLen)
+	case "argon2i", "argon2id":
+		return b.ChargeArgon2(uint64(max(slot.KDF.Memory, 0)), uint64(max(slot.KDF.Time, 0)), uint64(max(slot.KDF.CPUs, 0)))
+	}
+	return nil // an unknown KDF is refused by deriveKeyLUKS2
+}
+
+// chargeLUKS2Digest charges the PBKDF2 check of digest d to b.
+func chargeLUKS2Digest(b *kdfbudget.Budget, d *luks2Digest) error {
+	if d.Type != "pbkdf2" {
+		return nil
+	}
+	return chargePBKDF2(b, d.Hash, uint64(max(d.Iterations, 0)), len(d.Digest))
+}
+
 // checkLUKS2Slot refuses a key slot whose parameters exceed lim, before any
 // work is done for it.
 func checkLUKS2Slot(slot *luks2Keyslot, lim Limits) error {
@@ -290,6 +359,25 @@ func checkLUKS2Slot(slot *luks2Keyslot, lim Limits) error {
 		return lim.argon2(int64(slot.KDF.Time), int64(slot.KDF.Memory), int64(slot.KDF.CPUs))
 	}
 	return nil // an unknown KDF is refused by deriveKeyLUKS2
+}
+
+// cryptsetup's own maxima: LUKS2_KEYSLOTS_MAX and LUKS2_DIGEST_MAX in
+// lib/luks2/luks2_internal.h.
+const (
+	maxLUKS2Keyslots = 32
+	maxLUKS2Digests  = 8
+)
+
+// checkLUKS2Counts refuses a header with more key slots or digests than
+// cryptsetup writes, before any derivation: the JSON area can hold hundreds.
+func checkLUKS2Counts(cfg *luks2JSON) error {
+	if n := len(cfg.Keyslots); n > maxLUKS2Keyslots {
+		return fmt.Errorf("%w: %d key slots, at most %d", ErrLimit, n, maxLUKS2Keyslots)
+	}
+	if n := len(cfg.Digests); n > maxLUKS2Digests {
+		return fmt.Errorf("%w: %d digests, at most %d", ErrLimit, n, maxLUKS2Digests)
+	}
+	return nil
 }
 
 // checkLUKS2Digests bounds every master-key digest: each candidate key is
@@ -399,9 +487,20 @@ func deriveKeyLUKS2(slot *luks2Keyslot, passphrase []byte) ([]byte, error) {
 	}
 }
 
-// verifyLUKS2MasterKey checks mk against every PBKDF2 digest in the JSON.
-func verifyLUKS2MasterKey(mk []byte, cfg *luks2JSON) error {
+// digestsForSlot returns the digests whose "keyslots" list names slot.
+func digestsForSlot(cfg *luks2JSON, slot string) []luks2Digest {
+	var out []luks2Digest
 	for _, d := range cfg.Digests {
+		if slices.Contains(d.Keyslots, slot) {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// verifyLUKS2MasterKey checks mk against the PBKDF2 digests given.
+func verifyLUKS2MasterKey(mk []byte, digests []luks2Digest) error {
+	for _, d := range digests {
 		if d.Type != "pbkdf2" {
 			continue
 		}
