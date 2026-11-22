@@ -250,7 +250,11 @@ func unlockLUKS2(f io.ReaderAt, passphrase []byte, lim Limits) (*luksHeader, err
 	}
 	// The total work of one unlock (every slot KDF and every digest check) is
 	// charged to one budget BEFORE it is spent (go-encryptions/kdfbudget).
-	budget := newKDFBudget()
+	// A caller's Limits.Budget is charged as given; nil means a fresh default.
+	budget := lim.Budget
+	if budget == nil {
+		budget = newKDFBudget()
+	}
 	var refused error // the first slot the limits refused, said if none opens
 	for name, slot := range cfg.Keyslots {
 		if err := checkLUKS2Slot(&slot, lim); err != nil {

@@ -33,6 +33,14 @@ type Limits struct {
 	// MaxArgon2MemoryKiB bounds an Argon2 key slot's memory; at most
 	// argon2MaxMemoryKiB whatever it says.
 	MaxArgon2MemoryKiB uint32
+
+	// Budget bounds the total key-derivation work of the unlock (see
+	// go-encryptions/kdfbudget): every key slot and digest derivation is
+	// charged to it before it runs. Nil means a fresh kdfbudget.Default() for
+	// each Open. A non-nil Budget is charged as given and is spent as it is
+	// used, so one Budget shared by several Opens caps their sum; give each
+	// unlock its own to cap each one.
+	Budget *kdfbudget.Budget
 }
 
 // DefaultLimits are what Open and OpenFrom use.
