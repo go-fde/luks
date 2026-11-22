@@ -638,10 +638,10 @@ func buildLUKS2Image(t *testing.T) ([]byte, []byte, []byte) {
 
 	// Layout:
 	//   0    - 4095:  binary superblock (primary)
-	//   4096 - 8191:  JSON area (12288-4096 = 8192 bytes → hdrSize/2 = 8192+4096 = 12288)
-	//   12288 - 24575: secondary superblock (copy, we leave it empty)
-	//   32768+:        key area and payload
-	hdrSize := uint64(16384 * 2)   // 32768 total for both header copies
+	//   4096 - 16383:  JSON area (hdr_size - 4096 = 12288 bytes)
+	//   16384 - 32767: secondary header (we leave it empty)
+	//   65536+:        key area, then the payload
+	hdrSize := uint64(16384)       // ONE header: binary header + JSON area
 	areaOffset := int64(65536)     // key area starts after the header
 	payloadOffset := int64(131072) // payload starts 64KiB after key area
 
