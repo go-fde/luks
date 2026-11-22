@@ -137,7 +137,10 @@ key slot and digest is therefore checked **before** any work is done for it.
   (`kdfbudget.Default()`: 4 GiB, 255 threads, 2³² work units). The default
   accepts 32 slots of 1 GiB x 4 passes and refuses a 17th SHA-512 slot of 2²⁶
   iterations. A header that asks for more is refused with `ErrLimit`, which is
-  `kdfbudget.ErrLimit`.
+  `kdfbudget.ErrLimit`. To choose the budget, set `Limits.Budget` (with
+  `OpenLimited` / `OpenFromLimited`): it is charged as given, so a smaller
+  one tightens an unlock, and one shared by several `Open`s caps their sum.
+  A nil `Budget` means a fresh default one per `Open`.
 - **Segment**: `sector_size` is 512, 1024, 2048 or 4096, and the segment offset
   and size are multiples of it.
 
