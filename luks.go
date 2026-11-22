@@ -114,6 +114,9 @@ func Detect(path string) (bool, error) {
 // reach the LUKS header), and when the header states a fixed payload size a
 // read stops at its end with io.EOF, as os.File does at the end of a file.
 func (d *Device) ReadAt(p []byte, off int64) (int, error) {
+	if d.enc == nil {
+		return 0, os.ErrClosed
+	}
 	if err := d.checkOffset(off, len(p)); err != nil {
 		return 0, err
 	}
@@ -137,6 +140,9 @@ func (d *Device) ReadAt(p []byte, off int64) (int, error) {
 // that would run past a fixed payload size, is refused with ErrOffset and
 // nothing is written.
 func (d *Device) WriteAt(p []byte, off int64) (int, error) {
+	if d.enc == nil {
+		return 0, os.ErrClosed
+	}
 	if err := d.checkOffset(off, len(p)); err != nil {
 		return 0, err
 	}
@@ -172,8 +178,16 @@ func (d *Device) Size() int64 { return d.h.payloadLen }
 // payload's offset 0 is the device's PayloadOffset.
 func (d *Device) PayloadOffset() int64 { return d.h.payloadOff }
 
-// Close releases the underlying file descriptor.
-func (d *Device) Close() error { return d.f.Close() }
+// Close releases the underlying file descriptor and zeroes the volume key the
+// Device holds. The sector cipher is dropped (the key schedule it built is
+// garbage, not wiped: crypto/aes offers no way to clear it), and ReadAt and
+// WriteAt return os.ErrClosed afterwards.
+func (d *Device) Close() error {
+	clear(d.h.volumeKey)
+	d.h.volumeKey = nil
+	d.enc = nil
+	return d.f.Close()
+}
 
 // unlock detects the LUKS version and dispatches to the appropriate parser.
 func unlock(f blockRW, passphrase []byte, lim Limits) (*luksHeader, error) {

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 
-	"golang.org/x/crypto/pbkdf2"
+	"github.com/go-encryptions/hmac"
 )
 
 const (
@@ -87,8 +87,18 @@ func formatDevice(rw blockRW, passphrase []byte) (*Device, error) {
 
 // buildLUKS1Slot derives the slot key and produces the encrypted AF-split.
 func buildLUKS1Slot(vk, passphrase []byte) (*luks1SlotData, error) {
+	return buildLUKS1SlotIter(vk, passphrase, formatSlotIter)
+}
+
+// buildLUKS1SlotIter is buildLUKS1Slot with the PBKDF2 iteration count given,
+// so that the derivation's refusal of a count below 1 can be tested.
+func buildLUKS1SlotIter(vk, passphrase []byte, iter uint32) (*luks1SlotData, error) {
 	saltSlice := randBytes(32)
-	slotKey := pbkdf2.Key(passphrase, saltSlice, formatSlotIter, formatKeyBytes, sha256.New)
+	slotKey, err := hmac.PBKDF2(sha256.New, passphrase, saltSlice, int(iter), formatKeyBytes)
+	if err != nil {
+		return nil, fmt.Errorf("luks: format: slot kdf: %w", err)
+	}
+	defer clear(slotKey)
 	afPlain, err := afSplitKey(vk, formatStripes, formatHash)
 	if err != nil {
 		return nil, err
@@ -104,7 +114,7 @@ func buildLUKS1Slot(vk, passphrase []byte) (*luks1SlotData, error) {
 	afSectors := uint32(len(afPlain)+luks1SectorSize-1) / luks1SectorSize
 	var slot luks1SlotData
 	copy(slot.salt[:], saltSlice)
-	slot.iterations = formatSlotIter
+	slot.iterations = iter
 	slot.stripes = formatStripes
 	slot.afEncrypted = afEnc
 	slot.payloadOff = formatKMSector + afSectors
@@ -113,8 +123,18 @@ func buildLUKS1Slot(vk, passphrase []byte) (*luks1SlotData, error) {
 
 // buildLUKS1HdrBytes serialises the 592-byte LUKS1 physical header.
 func buildLUKS1HdrBytes(vk []byte, slot *luks1SlotData) ([]byte, error) {
+	return buildLUKS1HdrBytesIter(vk, slot, formatMKIter)
+}
+
+// buildLUKS1HdrBytesIter is buildLUKS1HdrBytes with the master-key digest's
+// iteration count given (see buildLUKS1SlotIter).
+func buildLUKS1HdrBytesIter(vk []byte, slot *luks1SlotData, iter uint32) ([]byte, error) {
 	mkSalt := randBytes(32)
-	mkDigest := pbkdf2.Key(vk, mkSalt, formatMKIter, 20, sha256.New)
+	mkDigest, err := hmac.PBKDF2(sha256.New, vk, mkSalt, int(iter), 20)
+	if err != nil {
+		return nil, fmt.Errorf("luks: format: master-key digest: %w", err)
+	}
+	defer clear(mkDigest)
 	buf := make([]byte, 592)
 	copy(buf[0:6], luksHeaderMagic)
 	binary.BigEndian.PutUint16(buf[6:8], 1)
@@ -125,7 +145,7 @@ func buildLUKS1HdrBytes(vk []byte, slot *luks1SlotData) ([]byte, error) {
 	binary.BigEndian.PutUint32(buf[108:112], formatKeyBytes)
 	copy(buf[112:132], mkDigest)
 	copy(buf[132:164], mkSalt)
-	binary.BigEndian.PutUint32(buf[164:168], formatMKIter)
+	binary.BigEndian.PutUint32(buf[164:168], iter)
 	// UUID at [168:208] left as zeros; slot 0 is active.
 	binary.BigEndian.PutUint32(buf[208:212], luks1KeySlotActive)
 	binary.BigEndian.PutUint32(buf[212:216], slot.iterations)

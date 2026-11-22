@@ -7,8 +7,8 @@ import (
 	"io"
 	"strconv"
 
+	"github.com/go-encryptions/hmac"
 	"golang.org/x/crypto/argon2"
-	"golang.org/x/crypto/pbkdf2"
 )
 
 // luks2BinHdr is the fixed binary superblock that precedes the JSON area.
@@ -296,7 +296,7 @@ func deriveKeyLUKS2(slot *luks2Keyslot, passphrase []byte) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("luks2: pbkdf2: %w", err)
 		}
-		return pbkdf2.Key(passphrase, slot.KDF.Salt, slot.KDF.Iterations, keyLen, hf), nil
+		return hmac.PBKDF2(hf, passphrase, slot.KDF.Salt, slot.KDF.Iterations, keyLen)
 	case "argon2i":
 		return argon2.Key(passphrase, slot.KDF.Salt, uint32(slot.KDF.Time),
 			uint32(slot.KDF.Memory), uint8(slot.KDF.CPUs), uint32(keyLen)), nil
@@ -318,7 +318,10 @@ func verifyLUKS2MasterKey(mk []byte, cfg *luks2JSON) error {
 		if err != nil {
 			continue
 		}
-		computed := pbkdf2.Key(mk, d.Salt, d.Iterations, len(d.Digest), hf)
+		computed, err := hmac.PBKDF2(hf, mk, d.Salt, d.Iterations, len(d.Digest))
+		if err != nil {
+			continue
+		}
 		match := true
 		for i, b := range computed {
 			if b != d.Digest[i] {
@@ -326,6 +329,7 @@ func verifyLUKS2MasterKey(mk []byte, cfg *luks2JSON) error {
 				break
 			}
 		}
+		clear(computed)
 		if match {
 			return nil
 		}
