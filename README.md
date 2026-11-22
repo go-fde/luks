@@ -37,7 +37,8 @@ Pure-Go read/write support for LUKS1 and LUKS2 full-disk encryption containers.
 | Integrity (AEAD per-sector tags, `--integrity` flag) | ❌ (complex; out of scope) |
 | Hardware tokens (FIDO2, TPM, smart cards) | ❌ (out of scope for passphrase library) |
 | Detached headers | ❌ (out of scope) |
-| Backup header fallback (secondary copy at `hdrSize/2`) | ❌ (valid devices always have a readable primary header) |
+| Header checksum (`csum_alg` over `hdr_size` bytes) | ✅ verified; an unknown or empty algorithm is refused |
+| Backup header (secondary copy at offset `hdr_size`) | ✅ used when the primary is corrupt (see below) |
 
 ## Usage
 
@@ -66,6 +67,18 @@ ok, err := luks.Detect("/path/to/disk.img")
 runs to the end of the device, which is the case for every LUKS1 header and
 for a LUKS2 segment of size `"dynamic"`, what cryptsetup writes. The payload
 is then `deviceSize - dev.PayloadOffset()` bytes.
+
+`ReadAt` and `WriteAt` take offsets in `[0, payload size)`. A negative offset,
+or one that would overflow `int64`, returns an error wrapping `ErrOffset`
+(a negative offset would otherwise reach the LUKS header). When the header
+states a payload size, a read stops at its end with `io.EOF`, as `os.File`
+does, and a write that would run past it is refused with `ErrOffset` and
+writes nothing. After `Close`, both return `os.ErrClosed`.
+
+`Close` wipes the volume key from memory before closing the file. The
+PBKDF2 derivations use `github.com/go-encryptions/hmac`, which also wipes the
+derived keys and digests. A header asking for zero PBKDF2 iterations is now an
+error, not an empty key.
 
 ### Create a new LUKS1 container
 
@@ -116,8 +129,33 @@ key slot and digest is therefore checked **before** any work is done for it.
   4 GiB. A program opening images from elsewhere (an upload, a browser) can
   tighten them with `OpenLimited` / `OpenFromLimited`.
 
+- **Counts**: at most 32 LUKS2 key slots and 8 digests. A slot is checked
+  only against the digests that list it, so the work for a wrong passphrase
+  is bounded per slot, not multiplied by every digest in the header.
+- **Total work**: every slot KDF and digest check of one `Open` is charged to
+  one `github.com/go-encryptions/kdfbudget` budget before it runs
+  (`kdfbudget.Default()`: 4 GiB, 255 threads, 2³² work units). The default
+  accepts 32 slots of 1 GiB x 4 passes and refuses a 17th SHA-512 slot of 2²⁶
+  iterations. A header that asks for more is refused with `ErrLimit`, which is
+  `kdfbudget.ErrLimit`.
+- **Segment**: `sector_size` is 512, 1024, 2048 or 4096, and the segment offset
+  and size are multiples of it.
+
 A refused slot gives an error that wraps `ErrLimit` and names the slot.
 A wrong passphrase gives a different error.
+
+### Header checksum and the secondary header
+
+A LUKS2 header copy is accepted only if its checksum verifies (`csum_alg` over
+`hdr_size` bytes with the csum field zeroed, LUKS2 on-disk format §2.1). The
+primary copy is at offset 0 and the secondary at offset `hdr_size`. The copy
+that verifies is used, the higher `seqid` when both do, so a device whose
+primary header is damaged still opens from the secondary. When the primary
+cannot be read at all, the secondary is looked for at each standard size
+(16 KiB to 4 MiB). A device with no verifying copy is refused.
+
+The checksum is unkeyed: it detects corruption and enables recovery, it does
+not authenticate the header against an attacker who can rewrite the device.
 
 ```go
 dev, err := luks.OpenFromLimited(rw, passphrase, luks.Limits{
