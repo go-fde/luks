@@ -1,10 +1,12 @@
 package luks
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 
 	"golang.org/x/crypto/argon2"
@@ -81,59 +83,148 @@ type luks2Digest struct {
 
 const luks2BinHdrSize = 4096 // size of the binary superblock block
 
-// parseLUKS2BinHdr reads the LUKS2 binary superblock.
-func parseLUKS2BinHdr(f io.ReaderAt) (*luks2BinHdr, error) {
-	buf := make([]byte, luks2BinHdrSize)
-	if _, err := f.ReadAt(buf, 0); err != nil {
-		return nil, fmt.Errorf("luks2: read binary hdr: %w", err)
-	}
-	h := &luks2BinHdr{
-		hdrSize:  binary.BigEndian.Uint64(buf[8:16]),
-		seqID:    binary.BigEndian.Uint64(buf[16:24]),
-		checkAlg: nullStr(buf[72:104]),
-		uuid:     nullStr(buf[168:208]),
-	}
-	copy(h.salt[:], buf[104:168])
-	return h, nil
+const (
+	luks2CsumOff        = 448 // the 64-byte csum field in the binary header
+	luks2CsumLen        = 64
+	luks2MagicPrimary   = "LUKS\xba\xbe"
+	luks2MagicSecondary = "SKUL\xba\xbe"
+)
+
+// luks2StandardHdrSizes are the header sizes the format defines (16 KiB to
+// 4 MiB); the secondary header of a device whose primary is unreadable can
+// only be at one of them (LUKS2 on-disk format, section 2.1).
+var luks2StandardHdrSizes = []uint64{
+	1 << 14, 1 << 15, 1 << 16, 1 << 17, 1 << 18, 1 << 19, 1 << 20, 1 << 21, 1 << 22,
 }
 
-// parseLUKS2JSON reads and decodes the JSON configuration area from f.
-func parseLUKS2JSON(f io.ReaderAt, binHdr *luks2BinHdr) (*luks2JSON, error) {
-	jsonStart := int64(luks2BinHdrSize)
-	// hdr_size is the size of ONE header, binary header included; the JSON
-	// area is hdr_size - 4096 (LUKS2 on-disk format, sections 2.1 and 2.2).
-	jsonEnd := int64(binHdr.hdrSize) - int64(luks2BinHdrSize)
-	if jsonEnd <= 0 || jsonEnd > 1<<22 {
-		return nil, fmt.Errorf("luks2: implausible JSON area size %d", jsonEnd)
-	}
-	buf := make([]byte, jsonEnd)
-	if _, err := f.ReadAt(buf, jsonStart); err != nil {
-		return nil, fmt.Errorf("luks2: read JSON area: %w", err)
-	}
-	// JSON is null-padded; trim at first null.
-	for i, c := range buf {
-		if c == 0 {
-			buf = buf[:i]
-			break
+// luks2Copy is one verified copy of the header (primary or secondary).
+type luks2Copy struct {
+	bin *luks2BinHdr
+	cfg *luks2JSON
+}
+
+// loadLUKS2Copy reads the header copy at off, checks its magic, its hdr_size
+// and its checksum, and decodes it. size is the expected hdr_size; 0 takes it
+// from the copy's own binary header (the primary case).
+//
+// hdr_size is the size of ONE header, binary header included; the JSON area is
+// hdr_size - 4096 (LUKS2 on-disk format, sections 2.1 and 2.2), and the
+// checksum covers all hdr_size bytes with the csum field zeroed.
+func loadLUKS2Copy(f io.ReaderAt, off int64, size uint64, magic string) (*luks2Copy, error) {
+	if size == 0 {
+		var first [16]byte
+		if _, err := f.ReadAt(first[:], off); err != nil {
+			return nil, fmt.Errorf("luks2: read binary hdr: %w", err)
 		}
+		size = binary.BigEndian.Uint64(first[8:16])
+	}
+	if size <= luks2BinHdrSize || size-luks2BinHdrSize > 1<<22 {
+		return nil, fmt.Errorf("luks2: implausible JSON area size %d", int64(size)-luks2BinHdrSize)
+	}
+	raw := make([]byte, size)
+	if _, err := f.ReadAt(raw, off); err != nil {
+		return nil, fmt.Errorf("luks2: read header: %w", err)
+	}
+	if string(raw[:6]) != magic {
+		return nil, fmt.Errorf("luks2: bad header magic at offset %d", off)
+	}
+	if got := binary.BigEndian.Uint64(raw[8:16]); got != size {
+		return nil, fmt.Errorf("luks2: header at offset %d states hdr_size %d, want %d", off, got, size)
+	}
+	bin := &luks2BinHdr{
+		hdrSize:  size,
+		seqID:    binary.BigEndian.Uint64(raw[16:24]),
+		checkAlg: nullStr(raw[72:104]),
+		uuid:     nullStr(raw[168:208]),
+	}
+	copy(bin.salt[:], raw[104:168])
+	if err := verifyLUKS2Checksum(raw, bin.checkAlg); err != nil {
+		return nil, err
+	}
+	cfg, err := decodeLUKS2JSON(raw[luks2BinHdrSize:])
+	if err != nil {
+		return nil, err
+	}
+	return &luks2Copy{bin: bin, cfg: cfg}, nil
+}
+
+// verifyLUKS2Checksum recomputes the header checksum over raw (one whole
+// header copy) with the csum field zeroed and compares it with the stored one.
+func verifyLUKS2Checksum(raw []byte, alg string) error {
+	if alg == "" {
+		return fmt.Errorf("luks2: header has no checksum algorithm")
+	}
+	hf, err := hashFactory(alg)
+	if err != nil {
+		return fmt.Errorf("luks2: checksum algorithm: %w", err)
+	}
+	// Every digest hashFactory returns is at most luks2CsumLen (64) bytes.
+	h := hf()
+	h.Write(raw[:luks2CsumOff])
+	h.Write(make([]byte, luks2CsumLen))
+	h.Write(raw[luks2CsumOff+luks2CsumLen:])
+	if !bytes.Equal(h.Sum(nil), raw[luks2CsumOff:luks2CsumOff+h.Size()]) {
+		return fmt.Errorf("luks2: header checksum mismatch")
+	}
+	return nil
+}
+
+// decodeLUKS2JSON decodes the null-padded JSON configuration area.
+func decodeLUKS2JSON(area []byte) (*luks2JSON, error) {
+	if i := bytes.IndexByte(area, 0); i >= 0 {
+		area = area[:i]
 	}
 	var cfg luks2JSON
-	if err := json.Unmarshal(buf, &cfg); err != nil {
+	if err := json.Unmarshal(area, &cfg); err != nil {
 		return nil, fmt.Errorf("luks2: parse JSON: %w", err)
 	}
 	return &cfg, nil
 }
 
+// readLUKS2Header returns the header to use: of the primary copy (offset 0) and
+// the secondary copy (offset hdr_size) it takes the one whose checksum
+// verifies, the higher seqid when both do (the secondary is the older one
+// after an interrupted update, the newer after a failed primary write), and
+// refuses when neither does. When the primary is unreadable its hdr_size is
+// not trusted either, so the secondary is looked for at every standard size.
+func readLUKS2Header(f io.ReaderAt) (*luks2Copy, error) {
+	primary, perr := loadLUKS2Copy(f, 0, 0, luks2MagicPrimary)
+	var sizes []uint64
+	if perr == nil {
+		sizes = []uint64{primary.bin.hdrSize}
+	} else {
+		var first [16]byte
+		if _, err := f.ReadAt(first[:], 0); err == nil {
+			sizes = append(sizes, binary.BigEndian.Uint64(first[8:16]))
+		}
+		sizes = append(sizes, luks2StandardHdrSizes...)
+	}
+	var secondary *luks2Copy
+	for _, size := range sizes {
+		if size == 0 || size > math.MaxInt64 {
+			continue
+		}
+		if c, err := loadLUKS2Copy(f, int64(size), size, luks2MagicSecondary); err == nil {
+			secondary = c
+			break
+		}
+	}
+	switch {
+	case primary != nil && (secondary == nil || secondary.bin.seqID <= primary.bin.seqID):
+		return primary, nil
+	case secondary != nil:
+		return secondary, nil
+	}
+	return nil, perr
+}
+
 // unlockLUKS2 tries each key slot with passphrase and returns a luksHeader.
 func unlockLUKS2(f io.ReaderAt, passphrase []byte, lim Limits) (*luksHeader, error) {
-	binHdr, err := parseLUKS2BinHdr(f)
+	hdr, err := readLUKS2Header(f)
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := parseLUKS2JSON(f, binHdr)
-	if err != nil {
-		return nil, err
-	}
+	cfg := hdr.cfg
 	seg, payloadOff, sectorSize, cipher, err := parseMainSegment(cfg)
 	if err != nil {
 		return nil, err
