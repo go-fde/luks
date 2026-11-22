@@ -14,7 +14,7 @@ import (
 // luks2BinHdr is the fixed binary superblock that precedes the JSON area.
 // Size: 512 bytes (the checksum-protected part is 448 bytes; full block is 4096).
 type luks2BinHdr struct {
-	hdrSize  uint64 // total size of BOTH header copies
+	hdrSize  uint64 // size of ONE header copy: binary header + JSON area
 	seqID    uint64
 	checkAlg string // "sha256" etc.
 	salt     [64]byte
@@ -100,8 +100,10 @@ func parseLUKS2BinHdr(f io.ReaderAt) (*luks2BinHdr, error) {
 // parseLUKS2JSON reads and decodes the JSON configuration area from f.
 func parseLUKS2JSON(f io.ReaderAt, binHdr *luks2BinHdr) (*luks2JSON, error) {
 	jsonStart := int64(luks2BinHdrSize)
-	jsonEnd := int64(binHdr.hdrSize/2) - int64(luks2BinHdrSize)
-	if jsonEnd <= 0 || jsonEnd > 1<<20 {
+	// hdr_size is the size of ONE header, binary header included; the JSON
+	// area is hdr_size - 4096 (LUKS2 on-disk format, sections 2.1 and 2.2).
+	jsonEnd := int64(binHdr.hdrSize) - int64(luks2BinHdrSize)
+	if jsonEnd <= 0 || jsonEnd > 1<<22 {
 		return nil, fmt.Errorf("luks2: implausible JSON area size %d", jsonEnd)
 	}
 	buf := make([]byte, jsonEnd)
