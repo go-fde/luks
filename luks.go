@@ -13,8 +13,10 @@
 package luks
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 )
 
@@ -107,14 +109,56 @@ func Detect(path string) (bool, error) {
 
 // ReadAt reads decrypted data from the plaintext payload starting at off.
 // off is relative to the start of the payload (sector 0 of the plaintext).
+//
+// off must lie in [0, payload size): a negative offset is ErrOffset (it would
+// reach the LUKS header), and when the header states a fixed payload size a
+// read stops at its end with io.EOF, as os.File does at the end of a file.
 func (d *Device) ReadAt(p []byte, off int64) (int, error) {
+	if err := d.checkOffset(off, len(p)); err != nil {
+		return 0, err
+	}
+	if size := d.h.payloadLen; size > 0 {
+		if off >= size {
+			return 0, io.EOF
+		}
+		if rest := size - off; int64(len(p)) > rest {
+			n, err := d.enc.readAt(d.f, p[:rest], d.h.payloadOff+off)
+			if err == nil {
+				err = io.EOF
+			}
+			return n, err
+		}
+	}
 	return d.enc.readAt(d.f, p, d.h.payloadOff+off)
 }
 
 // WriteAt encrypts p and writes it to the payload starting at off.
-// off is relative to the start of the payload.
+// off is relative to the start of the payload. A negative off, or a write
+// that would run past a fixed payload size, is refused with ErrOffset and
+// nothing is written.
 func (d *Device) WriteAt(p []byte, off int64) (int, error) {
+	if err := d.checkOffset(off, len(p)); err != nil {
+		return 0, err
+	}
+	if size := d.h.payloadLen; size > 0 && (off > size || int64(len(p)) > size-off) {
+		return 0, fmt.Errorf("%w: write of %d bytes at %d past the payload size %d", ErrOffset, len(p), off, size)
+	}
 	return d.enc.writeAt(d.f, p, d.h.payloadOff+off)
+}
+
+// ErrOffset is an I/O offset outside the payload: negative, or past its end.
+var ErrOffset = errors.New("luks: offset outside the payload")
+
+// checkOffset refuses a negative offset and one whose absolute position in
+// the device would overflow int64.
+func (d *Device) checkOffset(off int64, n int) error {
+	if off < 0 {
+		return fmt.Errorf("%w: negative offset %d", ErrOffset, off)
+	}
+	if off > math.MaxInt64-d.h.payloadOff-int64(n) {
+		return fmt.Errorf("%w: offset %d overflows", ErrOffset, off)
+	}
+	return nil
 }
 
 // Size returns the size of the plaintext payload in bytes, as the header
