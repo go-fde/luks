@@ -9,7 +9,7 @@ import (
 	"hash"
 	"io"
 
-	"golang.org/x/crypto/pbkdf2"
+	"github.com/go-encryptions/hmac"
 	"golang.org/x/crypto/ripemd160"
 )
 
@@ -127,7 +127,11 @@ func checkLUKS1Slot(h *luks1Phdr, slot *luks1KeySlot, lim Limits) error {
 // tryLUKS1Slot derives the slot key, decrypts the AF material, and verifies
 // the master key digest. Returns the master key on success.
 func tryLUKS1Slot(f io.ReaderAt, h *luks1Phdr, slot *luks1KeySlot, passphrase []byte, hf func() hash.Hash) ([]byte, error) {
-	slotKey := pbkdf2.Key(passphrase, slot.salt[:], int(slot.iterations), int(h.keyBytes), hf)
+	slotKey, err := hmac.PBKDF2(hf, passphrase, slot.salt[:], int(slot.iterations), int(h.keyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("luks1: key slot kdf: %w", err)
+	}
+	defer clear(slotKey)
 	afKey, err := readAndDecryptKeyMaterial(f, h, slot, slotKey)
 	if err != nil {
 		return nil, err
@@ -159,7 +163,11 @@ func readAndDecryptKeyMaterial(f io.ReaderAt, h *luks1Phdr, slot *luks1KeySlot, 
 
 // verifyMasterKey confirms that mk produces the expected digest.
 func verifyMasterKey(mk, digest, salt []byte, iter int, hf func() hash.Hash) error {
-	computed := pbkdf2.Key(mk, salt, iter, len(digest), hf)
+	computed, err := hmac.PBKDF2(hf, mk, salt, iter, len(digest))
+	if err != nil {
+		return fmt.Errorf("luks1: master key digest: %w", err)
+	}
+	defer clear(computed)
 	for i, b := range computed {
 		if b != digest[i] {
 			return fmt.Errorf("luks1: master key digest mismatch")
