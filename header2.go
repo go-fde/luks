@@ -146,6 +146,9 @@ func unlockLUKS2(f io.ReaderAt, passphrase []byte, lim Limits) (*luksHeader, err
 	if err != nil {
 		return nil, fmt.Errorf("luks2: segment size: %w", err)
 	}
+	if payloadLen%int64(sectorSize) != 0 {
+		return nil, fmt.Errorf("luks2: segment size %d is not a multiple of sector_size %d", payloadLen, sectorSize)
+	}
 	if err := checkLUKS2Digests(cfg, lim); err != nil {
 		return nil, fmt.Errorf("luks2: %w", err)
 	}
@@ -232,6 +235,16 @@ func parseMainSegment(cfg *luks2JSON) (luks2Segment, int64, int, string, error) 
 		ss := seg.SectorSize
 		if ss == 0 {
 			ss = 512
+		}
+		// cryptsetup accepts exactly these (lib/luks2/luks2_json_format.c);
+		// anything else panics the XTS library or allocates without bound.
+		switch ss {
+		case 512, 1024, 2048, 4096:
+		default:
+			return seg, 0, 0, "", fmt.Errorf("luks2: unsupported sector_size %d (512, 1024, 2048 or 4096)", ss)
+		}
+		if off%int64(ss) != 0 {
+			return seg, 0, 0, "", fmt.Errorf("luks2: segment offset %d is not a multiple of sector_size %d", off, ss)
 		}
 		return seg, off, ss, seg.Encryption, nil
 	}
