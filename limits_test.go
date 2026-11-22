@@ -39,6 +39,7 @@ func patchLUKS2(t *testing.T, img []byte, edit func(cfg map[string]any)) []byte 
 	}
 	clear(area)
 	copy(area, b)
+	sealLUKS2(out)
 	return out
 }
 

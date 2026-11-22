@@ -60,6 +60,10 @@ func TestLUKS2JSONAreaIsHdrSizeMinus4096(t *testing.T) {
 	}
 	clear(area)
 	copy(area, b)
+	sealLUKS2(img)
+	// Only the primary may serve this open: with a valid secondary left in
+	// place, a primary that failed to parse would be replaced by it unseen.
+	copy(img[hdrSize:], "XXXXXX")
 	dev, err := OpenFrom(&memRW{b: img}, []byte(interopPassphrase))
 	if err != nil {
 		t.Fatalf("a header whose %d bytes of JSON fit its %d-byte area is refused: %v", len(b), len(area), err)
@@ -135,6 +139,13 @@ func TestLUKS2HdrSizeBounds(t *testing.T) {
 	} {
 		img := bytes.Clone(base)
 		binary.BigEndian.PutUint64(img[8:16], tc.size)
+		if tc.ok {
+			// The checksum covers hdr_size bytes: the image must hold them.
+			if len(img) < int(tc.size) {
+				img = append(img, make([]byte, int(tc.size)-len(img))...)
+			}
+			sealLUKS2(img)
+		}
 		dev, err := OpenFrom(&memRW{b: img}, pass)
 		if tc.ok != (err == nil) {
 			t.Errorf("%s (hdr_size %d): err=%v", tc.name, tc.size, err)

@@ -662,6 +662,7 @@ func buildLUKS2Image(t *testing.T) ([]byte, []byte, []byte) {
 
 	// JSON area immediately after binary superblock.
 	copy(img[luks2BinHdrSize:], jsonStr)
+	sealLUKS2(img)
 
 	// Key material area.
 	copy(img[areaOffset:], encAF)
@@ -766,6 +767,7 @@ func TestLUKS2_BadJSON(t *testing.T) {
 	binary.BigEndian.PutUint64(img[8:16], 32768) // hdrSize
 	writePaddedStr(img[72:104], "sha256")
 	copy(img[luks2BinHdrSize:], []byte("{invalid json"))
+	sealLUKS2(img)
 	path := filepath.Join(t.TempDir(), "bad.luks2")
 	if err := os.WriteFile(path, img, 0o600); err != nil {
 		t.Fatal(err)
@@ -790,6 +792,7 @@ func TestLUKS2_NoCryptSegment(t *testing.T) {
 		"config":  map[string]interface{}{"json_size": "12288"},
 	})
 	copy(img[luks2BinHdrSize:], js)
+	sealLUKS2(img)
 	path := filepath.Join(t.TempDir(), "noseg.luks2")
 	if err := os.WriteFile(path, img, 0o600); err != nil {
 		t.Fatal(err)
@@ -859,6 +862,7 @@ func TestLUKS2_ArgonSlot(t *testing.T) {
 	copy(img[104:168], mustRand(64))
 	writePaddedStr(img[168:208], "argon2-uuid-test-00000000000000000000")
 	copy(img[luks2BinHdrSize:], js)
+	sealLUKS2(img)
 	copy(img[areaOffset:], encAF)
 
 	path := filepath.Join(t.TempDir(), "argon2.luks2")
@@ -1313,6 +1317,7 @@ func TestOpen_InvalidCipherAfterUnlock(t *testing.T) {
 	copy(img[104:168], mustRand(64))
 	writePaddedStr(img[168:208], "inv-cipher-uuid-000000000000000000000")
 	copy(img[luks2BinHdrSize:], js)
+	sealLUKS2(img)
 	copy(img[areaOffset:], encAF)
 
 	path := filepath.Join(t.TempDir(), "invcip.luks2")
@@ -1459,6 +1464,7 @@ func TestLUKS2_SlotBadAreaCipherViaOpen(t *testing.T) {
 	copy(img[104:168], mustRand(64))
 	writePaddedStr(img[168:208], "badarea-uuid-00000000000000000000000")
 	copy(img[luks2BinHdrSize:], js)
+	sealLUKS2(img)
 
 	path := filepath.Join(t.TempDir(), "badarea.luks2")
 	if err := os.WriteFile(path, img, 0o600); err != nil {
@@ -1623,6 +1629,7 @@ func TestLUKS2_IVTweakRoundtrip(t *testing.T) {
 	copy(img[104:168], mustRand(64))
 	writePaddedStr(img[168:208], "ivtweak-uuid-test-00000000000000000000")
 	copy(img[luks2BinHdrSize:], js)
+	sealLUKS2(img)
 	copy(img[areaOffset:], encAF)
 
 	path := filepath.Join(t.TempDir(), "ivtweak.luks2")
@@ -1670,6 +1677,7 @@ func TestLUKS2_BadIVTweak(t *testing.T) {
 		"config":  map[string]interface{}{"json_size": "12288"},
 	})
 	copy(img[luks2BinHdrSize:], js)
+	sealLUKS2(img)
 	path := filepath.Join(t.TempDir(), "badtweak.luks2")
 	if err := os.WriteFile(path, img, 0o600); err != nil {
 		t.Fatal(err)
