@@ -56,7 +56,7 @@ func TestLUKS1SlotAloneIsRefusedBeforeItsWork(t *testing.T) {
 	img, _, _ := buildLUKS1Image(t)
 	hostile := append([]byte(nil), img...)
 	binary.BigEndian.PutUint32(hostile[208+4:208+8], 50_000_000)
-	err := withBudget(hostile, []byte("wrong passphrase"), 1<<27)
+	err := withBudget(hostile, []byte("wrong passphrase"), 1<<24)
 	if !errors.Is(err, ErrLimit) || !strings.Contains(err.Error(), "key slot 0") {
 		t.Fatalf("err = %v, want ErrLimit from key slot 0", err)
 	}
