@@ -85,6 +85,14 @@ func unlockLUKS1(f io.ReaderAt, passphrase []byte, lim Limits) (*luksHeader, err
 	if err := lim.pbkdf2("master-key digest", int64(h.mkDigestIterations)); err != nil {
 		return nil, fmt.Errorf("luks1: %w", err)
 	}
+	// Every slot tried costs a PBKDF2 for its key and one for the master-key
+	// digest; both are charged to one budget BEFORE they are spent (as for
+	// LUKS2). A caller's Limits.Budget is charged as given; nil means a fresh
+	// default.
+	budget := lim.Budget
+	if budget == nil {
+		budget = newKDFBudget()
+	}
 	var refused error // the first slot the limits refused, said if none opens
 	for i := range h.keySlots {
 		slot := &h.keySlots[i]
@@ -96,6 +104,12 @@ func unlockLUKS1(f io.ReaderAt, passphrase []byte, lim Limits) (*luksHeader, err
 				refused = fmt.Errorf("luks1: key slot %d: %w", i, err)
 			}
 			continue
+		}
+		if err := chargePBKDF2(budget, h.hashSpec, uint64(slot.iterations), int(h.keyBytes)); err != nil {
+			return nil, fmt.Errorf("luks1: key slot %d: %w", i, err)
+		}
+		if err := chargePBKDF2(budget, h.hashSpec, uint64(h.mkDigestIterations), len(h.mkDigest)); err != nil {
+			return nil, fmt.Errorf("luks1: digest for key slot %d: %w", i, err)
 		}
 		mk, err := tryLUKS1Slot(f, h, slot, passphrase, hashFn)
 		if err != nil {
