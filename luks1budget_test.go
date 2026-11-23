@@ -3,6 +3,7 @@ package luks
 import (
 	"encoding/binary"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/go-encryptions/kdfbudget"
@@ -46,6 +47,18 @@ func TestLUKS1HostileHeaderIsRefusedBeforeItsWork(t *testing.T) {
 	hostile := hostileLUKS1(img, 50_000_000)
 	if err := withBudget(hostile, []byte("wrong passphrase"), 1<<27); !errors.Is(err, ErrLimit) || !errors.Is(err, kdfbudget.ErrLimit) {
 		t.Fatalf("err = %v, want ErrLimit", err)
+	}
+}
+
+// TestLUKS1SlotAloneIsRefusedBeforeItsWork: one hostile slot with an honest
+// master-key digest is refused by the slot's own charge, not by the digest's.
+func TestLUKS1SlotAloneIsRefusedBeforeItsWork(t *testing.T) {
+	img, _, _ := buildLUKS1Image(t)
+	hostile := append([]byte(nil), img...)
+	binary.BigEndian.PutUint32(hostile[208+4:208+8], 50_000_000)
+	err := withBudget(hostile, []byte("wrong passphrase"), 1<<27)
+	if !errors.Is(err, ErrLimit) || !strings.Contains(err.Error(), "key slot 0") {
+		t.Fatalf("err = %v, want ErrLimit from key slot 0", err)
 	}
 }
 
